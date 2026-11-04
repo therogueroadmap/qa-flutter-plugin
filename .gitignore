@@ -1,0 +1,34 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.idea/
+.vscode/
+
+# Office lock files
+~$*
+.orphaned_at
+
+# Local experiments (never commit)
+scratch/
+*.local.md
+
+# Internal design trail — specs, plans, sessions, hand-off briefs are working
+# documents for the implementation team. The public-facing record of what the
+# plugin does and why lives in README, CHANGELOG, ROADMAP, and docs/.
+docs/design/
+docs/sessions/
+docs/superpowers/
+docs/roadmap-session-brief.md
+
+# QA artifacts (runs happen in consumer projects, not in this repo)
+qa-reports/
+test/docs/QA_REPORTS/
+.qa-bootstrap-marker
+
+# Node (for plugin.json validation only)
+node_modules/
+QA Autonomo v2/
+.claude/settings.local.json
+docs/superpowers/plans/.controller-state.json

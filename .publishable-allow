@@ -1,0 +1,1 @@
+^/home/\[a-zA-Z\]  # search pattern in CI/CONTRIBUTING that detects hardcoded home paths, not a real path

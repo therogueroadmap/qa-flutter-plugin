@@ -1,0 +1,24 @@
+{
+  "name": "qa-flutter",
+  "description": "QA orchestration for Flutter — full testing pyramid (unit/widget/state → integration/E2E → stability → release gate) with autonomous lifecycle (backend bootstrap, device boot, tests, teardown) for Android (flutter_drive default, Appium opt-in) and Web.",
+  "version": "1.6.3",
+  "author": {
+    "name": "José R. Pérez Sandó",
+    "email": "contact@therogueroadmap.com"
+  },
+  "keywords": [
+    "qa",
+    "flutter",
+    "android",
+    "web",
+    "stability",
+    "release-gate",
+    "test-planning",
+    "autonomous",
+    "integration-testing",
+    "claude-code"
+  ],
+  "homepage": "https://github.com/therogueroadmap/qa-flutter-plugin",
+  "repository": "https://github.com/therogueroadmap/qa-flutter-plugin",
+  "license": "MIT"
+}

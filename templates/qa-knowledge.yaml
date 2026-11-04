@@ -1,0 +1,778 @@
+# ============================================================
+# qa-knowledge.yaml — Base de conocimiento QA Autónomo v2
+# Colocar en qa-plugin-config/, junto a qa-agent.yaml
+# Ejemplo: cp ~/.claude/plugins/local/qa-flutter/templates/qa-knowledge.yaml ./qa-plugin-config/qa-knowledge.yaml
+# ============================================================
+#
+# Este archivo registra errores conocidos y sus soluciones.
+# El agente lo lee antes de cada ejecución (preflight) y lo
+# actualiza automáticamente cuando encuentra y resuelve errores nuevos.
+#
+# CÓMO AÑADIR UNA SOLUCIÓN MANUALMENTE:
+#   1. Copia el bloque de ejemplo de abajo
+#   2. Asigna un ID único (K001, K002, ...)
+#   3. Rellena pattern, preflight_check y solution
+#   4. Pon registered_by: "user"
+#
+# CATEGORÍAS válidas: environment | build | ci
+# TIPOS de solución : command | manual | config_patch
+# ============================================================
+
+version: "1.0"
+updated_at: "2026-05-16"
+
+errors:
+
+  # ----------------------------------------------------------
+  # ENTORNO — Emulador
+  # ----------------------------------------------------------
+  - id: "K001"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "environment"
+    description: "Emulador Android no encontrado o no iniciado"
+    enabled: true
+
+    # Regex aplicado contra stdout/stderr de cualquier comando del run
+    pattern: "No devices found|no connected devices|error: no devices/emulators found"
+
+    # Verificación proactiva que se ejecuta ANTES del run
+    preflight_check:
+      type: "command"
+      # Retorna 0 si hay al menos un emulador listado, distinto de 0 si no
+      command: "adb devices 2>/dev/null | grep -c 'emulator\\|device$'"
+      # Si el resultado es menor que este número, se considera error detectado
+      min_expected: 1
+
+    solution:
+      auto_apply: true
+      type: "command"
+      steps:
+        - cmd: "emulator -avd ${QA_AVD_NAME:-Pixel_5_API_33} &"
+          wait_seconds: 5
+          description: "Lanzar AVD en segundo plano"
+        - cmd: "adb wait-for-device"
+          wait_seconds: 60
+          description: "Esperar a que el dispositivo esté listo"
+      fallback_message: |
+        No se pudo iniciar el emulador automáticamente.
+        Ejecutar manualmente: emulator -avd Pixel_5_API_33
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null    # "success" | "failure"
+
+  # ----------------------------------------------------------
+  # ENTORNO — Puerto del backend ocupado
+  # ----------------------------------------------------------
+  - id: "K002"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "environment"
+    description: "Puerto 8080 ocupado — backend no puede arrancar"
+    enabled: true
+
+    pattern: "Address already in use.*8080|Port 8080.*in use|Bind.*8080.*fail"
+
+    preflight_check:
+      type: "command"
+      command: "lsof -ti:8080 2>/dev/null | wc -l | tr -d ' '"
+      # Si retorna > 0 hay un proceso en ese puerto
+      min_expected: 0
+      invert: true    # error si el resultado >= min_expected
+
+    solution:
+      auto_apply: true
+      type: "command"
+      steps:
+        - cmd: "lsof -ti:8080 | xargs kill -9 2>/dev/null || true"
+          wait_seconds: 2
+          description: "Matar proceso en puerto 8080"
+      fallback_message: |
+        No se pudo liberar el puerto 8080.
+        Ejecutar manualmente: lsof -ti:8080 | xargs kill -9
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # ENTORNO — Backend no responde (health check)
+  # ----------------------------------------------------------
+  - id: "K003"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "environment"
+    description: "Backend no disponible en la URL de health check"
+    enabled: true
+
+    pattern: "Connection refused.*8080|backend.*unreachable|health.*check.*failed|ECONNREFUSED"
+
+    preflight_check:
+      type: "command"
+      command: "curl -sf ${QA_BACKEND_HEALTH:-http://localhost:8080/api/health} -o /dev/null; echo $?"
+      min_expected: 0
+      invert: true    # error si curl retorna != 0 (no responde)
+
+    solution:
+      auto_apply: false    # requiere contexto del proyecto para el start_cmd
+      type: "manual"
+      steps: []
+      fallback_message: |
+        El backend no está disponible. Levantarlo antes del run o configurar
+        autonomous.backend.start_cmd en qa-agent.yaml (ver G1 en el roadmap).
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — flutter pub get falla por conflicto de versiones
+  # ----------------------------------------------------------
+  - id: "K004"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "build"
+    description: "flutter pub get falla por versiones incompatibles en pubspec.yaml"
+    enabled: true
+
+    pattern: "version solving failed|Because .* depends on .* which doesn't match|pub get failed"
+
+    preflight_check:
+      type: "command"
+      command: "flutter pub get --dry-run 2>&1 | grep -c 'version solving failed' || true"
+      min_expected: 0
+      invert: true
+
+    solution:
+      auto_apply: true
+      type: "command"
+      steps:
+        - cmd: "flutter pub cache repair"
+          wait_seconds: 30
+          description: "Reparar caché de pub"
+        - cmd: "flutter pub get"
+          wait_seconds: 60
+          description: "Reintentar pub get"
+      fallback_message: |
+        Revisar pubspec.yaml para resolver conflictos de versiones manualmente.
+        Usar: flutter pub deps para ver el árbol de dependencias.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — Gradle build falla por caché corrompida
+  # ----------------------------------------------------------
+  - id: "K005"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "build"
+    description: "Gradle falla con caché corrompida o lock file"
+    enabled: true
+
+    pattern: "Could not resolve|Gradle build failed|Could not lock.*lock|BUILD FAILED.*daemon"
+
+    preflight_check: null    # Solo se detecta durante el run, no hay preflight útil
+
+    solution:
+      auto_apply: true
+      type: "command"
+      steps:
+        - cmd: "cd android && ./gradlew clean 2>/dev/null || true"
+          wait_seconds: 30
+          description: "Limpiar build de Gradle"
+        - cmd: "flutter clean"
+          wait_seconds: 15
+          description: "Limpiar build de Flutter"
+        - cmd: "flutter pub get"
+          wait_seconds: 60
+          description: "Regenerar dependencias"
+      fallback_message: |
+        Limpiar manualmente: flutter clean && cd android && ./gradlew clean
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # CI — Variable de entorno faltante
+  # ----------------------------------------------------------
+  - id: "K006"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "ci"
+    description: "Variable de entorno requerida no definida en el entorno de CI"
+    enabled: true
+
+    pattern: "Environment variable.*not set|\\$\\{[A-Z_]+\\}.*undefined|getenv.*null"
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps: []
+      fallback_message: |
+        Verificar que las variables de entorno estén definidas en el pipeline.
+        Variables comunes: QA_BACKEND_URL, QA_AVD_NAME, ANDROID_HOME, FLUTTER_HOME.
+        Consulta la documentación de tu pipeline de CI para la lista completa.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # CI — Timeout en step de CI
+  # ----------------------------------------------------------
+  - id: "K007"
+    registered_at: "2026-05-02"
+    registered_by: "template"
+    category: "ci"
+    description: "Step de CI supera el timeout configurado"
+    enabled: true
+
+    pattern: "Process killed.*timeout|Timed out after|Job cancelled.*exceeded.*limit"
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "config_patch"
+      steps: []
+      config_hint: |
+        En el archivo de pipeline (.github/workflows/*.yml o similar), aumentar
+        el timeout del job o step que falla. Ejemplo para GitHub Actions:
+          jobs:
+            qa:
+              timeout-minutes: 45   # aumentar según sea necesario
+      fallback_message: |
+        Revisar el tiempo de ejecución del run anterior y ajustar el timeout del pipeline.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # ENTORNO — Emulador no puede alcanzar localhost del host
+  # Registrado por: usuario
+  # Contexto: el emulador Android corre en una red NAT propia.
+  # Para que alcance puertos del PC host se necesita adb reverse.
+  # Este mapeo NO persiste tras reinicio del emulador, por eso
+  # el preflight lo verifica y aplica en cada run.
+  # ----------------------------------------------------------
+  - id: "K008"
+    registered_at: "2026-05-02"
+    registered_by: "user"
+    category: "environment"
+    description: "Emulador no puede alcanzar localhost del host — falta adb reverse tcp:8080"
+    enabled: true
+
+    # Coincide con errores de conexión rechazada al puerto de la API
+    # Ajustar el puerto (8080) si el backend corre en uno distinto
+    pattern: "Connection refused.*:8080|ECONNREFUSED.*8080|Failed to connect.*localhost:8080|connect ECONNREFUSED 10\\.0\\.2\\.2:8080"
+
+    preflight_check:
+      type: "command"
+      # Verifica si el túnel ya está activo. Retorna 1 si está, 0 si no.
+      command: "adb reverse --list 2>/dev/null | grep -c 'tcp:8080' || echo 0"
+      min_expected: 1
+      # NO usa invert: el check falla cuando el conteo es 0 (túnel no existe)
+
+    solution:
+      auto_apply: true
+      type: "command"
+      steps:
+        - cmd: "adb reverse tcp:8080 tcp:8080"
+          wait_seconds: 2
+          description: "Mapear puerto 8080 del emulador al puerto 8080 del host"
+      fallback_message: |
+        El emulador no puede alcanzar el backend en el host.
+        Ejecutar manualmente antes del run: adb reverse tcp:8080 tcp:8080
+        Nota: este mapeo desaparece al reiniciar el emulador — el preflight
+        lo restaura automáticamente en cada run.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — flutter_drive web: hit-test fuera del viewport real del browser
+  # Registrado por: usuario (caso observado: app Flutter web de prueba)
+  # Contexto: `flutter drive -d chrome` calcula offsets de tap contra
+  # `tester.view.physicalSize` (que el test puede sobreescribir), pero el
+  # hit-test real ocurre contra el viewport del browser. Si el botón cae en
+  # y > altura_browser, el tap se traga (cae en RenderAbsorbPointer / _RenderTheater
+  # del Overlay) y el `onPressed` nunca dispara. El test pasa loose matchers
+  # pero el flujo nunca avanza. Síntoma típico: "Bad state: <next step> never rendered"
+  # con warnings repetidos "tap() ... derived an Offset that would not hit test".
+  # No hay autofix — la mitigación es no usar flutter_drive web para flujos largos.
+  # ----------------------------------------------------------
+  - id: "K011"
+    registered_at: "2026-05-16"
+    registered_by: "user"
+    category: "build"
+    description: "flutter_drive -d chrome: tap no llega al widget si su offset layouted supera el viewport real del browser"
+    enabled: true
+
+    # Warnings del framework cuando el hit-test cae fuera del widget esperado
+    pattern: "derived an Offset.*would not hit test|widget is actually off-screen, or another widget is obscuring it|_RenderTheater.*RenderAbsorbPointer"
+
+    # No es un check de entorno — es un anti-patrón estructural del stack.
+    # El preflight queda nulo: la skill solo aporta diagnóstico y recomendación.
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps:
+        - cmd: "echo 'No automated workaround. See fallback_message for mitigations.'"
+          wait_seconds: 0
+          description: "Aviso al usuario"
+      fallback_message: |
+        flutter_drive web (-d chrome) tiene un desajuste entre el layout virtual
+        del test y el viewport real del browser. Los taps caen en coordenadas
+        que el browser no resuelve al widget esperado, sino al Overlay del
+        Navigator (RenderTheater + RenderAbsorbPointer).
+
+        Lo que NO resuelve:
+        - tester.view.physicalSize (solo afecta layout, no el browser real)
+        - --web-browser-flag=--window-size=W,H (no propaga al viewport interno)
+        - tester.tap(..., warnIfMissed: false) (silencia warning, no dispatch real)
+        - Scrollable.ensureVisible(alignment: 0.5) — además puede colgar
+          pumpAndSettle si hay tickers activos en la sección destino
+
+        Mitigaciones que SÍ funcionan:
+        1. Restringir flutter_drive web a flujos cortos (≤1 pantalla, sin scroll vertical).
+        2. Para flujos largos / wizards: usar Playwright contra Chrome (CanvasKit) con la
+           estrategia documentada en K012 (role + hasText + dispatchEvent + aria-label).
+           Pre-requisito: la app debe llamar
+           `WidgetsFlutterBinding.ensureInitialized().ensureSemantics()` en main().
+        3. Para validar end-to-end backend-only: usar curl/HTTP directo al endpoint
+           con el payload completo, y verificar persistencia con un script JDBC
+           independiente. No prueba el frontend pero garantiza el contrato.
+
+        NOTA v1.4.1: la sugerencia previa de usar `--web-renderer html` quedó
+        obsoleta — esa flag fue removida en Flutter 3.29. CanvasKit es el único renderer.
+        `Semantics(identifier: ...)` tampoco se serializa al DOM. Ver K012 para la
+        estrategia real de selectores Playwright contra CanvasKit.
+
+        Evidencia y diagnóstico full: el log del run mostrará varias líneas
+        consecutivas con "derived an Offset (X.X, Y.Y) that would not hit test"
+        y `_RenderTheater` cerca del top de la HitTestResult.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — Playwright contra Flutter web (CanvasKit): selectores que sí funcionan
+  # Registrado por: usuario (caso observado: app Flutter web de prueba)
+  # Contexto: descubrimiento empírico que invalida el modelo asumido por
+  # qa-flutter-web-driver-runner pre-v1.4.1 (HTML renderer + Semantics(identifier:) → id).
+  # En Flutter ≥3.29 la flag --web-renderer fue removida y `Semantics(identifier:)`
+  # NO se serializa al DOM. El modelo correcto para selectores y taps está abajo.
+  # ----------------------------------------------------------
+  - id: "K012"
+    registered_at: "2026-05-20"
+    registered_by: "user"
+    category: "build"
+    description: "Playwright + Flutter web CanvasKit: estrategia de selectores y taps validada empíricamente"
+    enabled: true
+
+    # No es un patrón de error sino un patrón de uso. Pattern intencionalmente vacío.
+    pattern: ""
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps:
+        - cmd: "echo 'Patrón de implementación — sin auto-apply. Ver fallback_message.'"
+          wait_seconds: 0
+          description: "Aviso al usuario"
+      fallback_message: |
+        Estrategia de selectores Playwright contra Flutter web (CanvasKit, Flutter 3.29+):
+
+        Pre-requisito en main() de la app Flutter:
+          WidgetsFlutterBinding.ensureInitialized().ensureSemantics();
+        Sin esto, el a11y tree está vacío y ningún selector encuentra nada.
+
+        SELECTORES POR TIPO:
+
+        1. Botones (FilledButton, TextButton, IconButton con label):
+           Selector: flt-semantics[role="button"] por hasText (case-insensitive).
+           Click: NO usar Playwright .click() — no llega al onPressed de Flutter.
+           Hacer dispatchEvent() en cadena desde JS:
+             pointerdown → mousedown → pointerup → mouseup → click
+           con PointerEventInit { bubbles, cancelable, clientX, clientY, button:0 }.
+
+        2. TextFormField:
+           Selector: input[aria-label="<labelText>"] (Flutter setea aria-label desde
+           el labelText del campo). textarea[aria-label="..."] para multiline.
+           Fill: Playwright .fill() directo funciona.
+
+        3. Input dinámico (creado on-demand al tap):
+           Algunos campos no existen en el DOM permanente. Tras click en el campo
+           Flutter inserta un <input> en <flt-text-editing-host>:
+             flt-text-editing-host input, flt-text-editing-host textarea
+           Pattern: tap_neighbour → wait → fill.
+
+        4. Widget con Semantics(label: "X") explícito:
+           Selector: flt-semantics[aria-label="X"].
+           Click según role.
+
+        LO QUE NO FUNCIONA (asunciones obsoletas removidas en v1.4.1):
+        - --web-renderer html (removido en Flutter 3.29)
+        - Semantics(identifier: 'X') → flt-semantics[id="X"] (identifier NO se
+          serializa al DOM, solo lo usa SemanticsTester interno)
+        - Playwright .click() sobre flt-semantics[role="button"] (no dispara onPressed)
+        - tester.view.physicalSize en el setup del test (afecta layout virtual, no
+          viewport real del browser)
+
+        WAITS RECOMENDADOS:
+        - flt-glass-pane attached (NO visible — visibility:hidden by design)
+        - flt-semantics.first() attached (a11y tree emitido)
+        - waitForLoadState('networkidle') tras navegación
+
+        Implementación de referencia en el SKILL del driver (Section C.4) o en
+        el _helpers.ts de tu proyecto (qa-plugin-config/web-tests/_helpers.ts).
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — Flutter web (CanvasKit) fill strategy: click-prime + fill
+  # Registrado por: usuario (caso observado: wizard multi-paso en Flutter web de prueba)
+  # Contexto: el fillByAriaLabel del v1.5.0 (solo input.fill) falla en wizards
+  # reales con múltiples campos y dropdowns. Los valores NO llegan al
+  # TextEditingController de Flutter cuando se escribe sobre un input que perdió
+  # foco. Workaround validado: click-prime con { force: true } antes del fill,
+  # más waitForTimeout cortos antes/después para que Flutter attache el text
+  # editing client y commit el value.
+  # ----------------------------------------------------------
+  - id: "K013"
+    registered_at: "2026-05-20"
+    registered_by: "user"
+    category: "build"
+    description: "Flutter web CanvasKit: fill() solo NO basta para inputs con aria-label; requiere click-prime previo"
+    enabled: true
+
+    # Pattern (ampliado en v1.6.1 con variante INDIRECTA, fixed cross-line en v1.6.2):
+    #   Directa (síntoma inmediato): el campo queda vacío y Flutter muestra un mensaje de campo obligatorio.
+    #   Indirecta (silenciosa, caso observado en un wizard de prueba): fillInput aparenta
+    #   funcionar (sin error) pero el value no llegó al TextEditingController → el step
+    #   siguiente del wizard espera un input del próximo paso con timeout. El síntoma visible
+    #   es TimeoutError esperando 'input[aria-label="..."]' del paso N+1, no un error en el
+    #   fillInput del paso N. Matchear ambos casos.
+    #
+    # IMPORTANTE: usamos [\s\S]* en vez de .* porque los stack traces de Playwright tienen
+    # newlines (TimeoutError / Call log / waiting for...) y .* NO matchea \n por default
+    # en la mayoría de regex engines. v1.6.1 tenía .* y NO matcheaba el caso observado
+    # en un wizard de prueba. Fix en v1.6.2.
+    pattern: "(?:campo|field|valor)\\s*requerid|required field|TextFormField[\\s\\S]*empty|TimeoutError[\\s\\S]*locator[\\s\\S]*input\\[aria-label[\\s\\S]*\\*?\\\"\\]"
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps:
+        - cmd: "echo 'Patrón estructural — sin auto-apply. Ver fallback_message.'"
+          wait_seconds: 0
+          description: "Aviso al usuario"
+      fallback_message: |
+        Para llenar inputs en Flutter web CanvasKit de forma confiable:
+
+        ```typescript
+        async function fillInput(page, label, value) {
+          const input = page.locator(`input[aria-label="${label}"]`);
+          await input.waitFor({ state: 'attached', timeout: 15_000 });
+          await input.click({ force: true });   // CLICK-PRIME: attacha el text editing client
+          await page.waitForTimeout(80);
+          await input.fill(value);              // fill ahora llega al TextEditingController
+          await page.waitForTimeout(200);
+        }
+        ```
+
+        Por qué funciona:
+        - Flutter NO bindea el input permanente (en el overlay flt-semantics) al
+          TextEditingController hasta que recibe foco.
+        - Click-prime con { force: true } fuerza foco (bypaseando el visibility:hidden
+          del overlay) y dispara el binding del cliente de edición de texto.
+        - El fill() siguiente escribe en el mismo input, que ahora SÍ está conectado
+          al controller. El waitForTimeout(200) le da tiempo a Flutter a commit el value
+          al estado del widget.
+
+        Tip: si llenas múltiples campos seguidos, haz los DROPDOWNS PRIMERO. Cambiar
+        un dropdown puede triggerear un rebuild del form que descarta inputs ya escritos.
+        Orden recomendado: dropdowns → text fields → email last (típicamente).
+
+        Este patrón está implementado en `fillInput` del _helpers.ts del driver
+        a partir de v1.5.1. `fillByAriaLabel` es alias por back-compat.
+
+        ─── Si este match fue INDIRECTO (v1.6.1) ───
+        Si el error visible fue `TimeoutError esperando input[aria-label="..."]`
+        del paso N+1 (no del paso N donde se llamó fillInput), entonces el problema
+        más probable es que `fillInput` aparentó funcionar pero el value no se
+        commiteó al TextEditingController. Validar manualmente (modo --headed):
+          1. ¿El value entró al input en el momento del fill?
+          2. ¿El form rebuildeó tras un dropdown y descartó el value?
+          3. ¿El input tiene un binding correcto al controller en el código Dart?
+        Si el value SÍ entró pero el siguiente paso falla igual, el problema NO
+        es K013 — buscar otro K# o registrar K-new.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — Flutter web (CanvasKit) button text: dual search textContent + aria-label
+  # Registrado por: usuario (caso observado: wizard multi-paso en Flutter web de prueba)
+  # Contexto: Flutter pone el texto visible de algunos widgets en aria-label y no
+  # en textContent. Playwright hasText() solo examina textContent. Buscar botones
+  # solo por hasText falla en ~30% de los casos (botones con ícono, dropdowns sin
+  # selección que solo muestran el label).
+  # ----------------------------------------------------------
+  - id: "K014"
+    registered_at: "2026-05-20"
+    registered_by: "user"
+    category: "build"
+    description: "Flutter web CanvasKit: el texto visible de algunos widgets vive en aria-label, NO en textContent"
+    enabled: true
+
+    # Pattern (ampliado en v1.6.1, fixed cross-line en v1.6.2):
+    #   Directa: tapButton/locator no encontró el botón.
+    #   Indirecta: el tap aparentó funcionar pero no disparó onPressed → la pantalla no
+    #   cambia y el siguiente locator espera un elemento que nunca llega.
+    # Cross-line safe: usamos [\s\S]* (ver nota en K013).
+    pattern: "no flt-semantics\\[role=.button.\\] matched|hasText[\\s\\S]*timeout|TimeoutError[\\s\\S]*flt-semantics\\[role=.button|tapButton[\\s\\S]*Timeout"
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps:
+        - cmd: "echo 'Patrón estructural — sin auto-apply. Ver fallback_message.'"
+          wait_seconds: 0
+          description: "Aviso al usuario"
+      fallback_message: |
+        Para tapear botones / menuitems Flutter de forma confiable, buscar por
+        textContent O aria-label (ambos), no solo uno:
+
+        ```typescript
+        async function tapButton(page, text) {
+          const src = typeof text === 'string' ? text : text.source;
+          const matched = await page.evaluate((textSrc) => {
+            const re = new RegExp(textSrc, 'i');
+            const all = Array.from(document.querySelectorAll(
+              'flt-semantics[role="button"], flt-semantics[role="menuitem"]'
+            ));
+            const el = all.find(n => re.test(n.textContent ?? ''))
+                    ?? all.find(n => re.test(n.getAttribute('aria-label') ?? ''));
+            if (!el) return false;
+            // ... dispatch chain ...
+          }, src);
+          if (!matched) throw new Error(`no matched "${src}"`);
+        }
+        ```
+
+        Casos típicos donde el texto está SOLO en aria-label:
+        - FilledButton.icon (botón con ícono + label) — aria-label tiene "X", textContent vacío.
+        - DropdownButton sin selección — aria-label tiene "Ciudad *", textContent vacío.
+        - IconButton con tooltip.
+        - PopupMenuItem (role=menuitem) — el accesible name suele estar en aria-label.
+
+        Este patrón está implementado en `tapButton` del _helpers.ts del driver
+        a partir de v1.5.1. Para `buttonByText` (legacy Locator), usar solo para
+        inspección — no para tap, porque hasText no cubre aria-label.
+
+        ─── Si este match fue INDIRECTO (v1.6.1) ───
+        Si el error visible fue `TimeoutError` en un locator distinto del botón
+        (ej. esperando el contenido de la próxima pantalla), pero el match disparó
+        porque el OUTPUT mencionaba `flt-semantics[role="button"]`, validar:
+          1. ¿El tap se ejecutó pero onPressed no disparó? Posible: el botón
+             estaba en estado disabled o el dispatch no llegó al handler.
+          2. ¿La acción del botón es scroll/modal/toggle (no navegación) y el
+             test esperaba navegación? Revisar marker [INTERACT] vs [NAV] del plan.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — Flutter web (CanvasKit) unlabeled textbox: dispatch + keyboard.type
+  # Registrado por: usuario (caso observado: wizard multi-paso en Flutter web de prueba)
+  # Contexto: campos como teléfono o numéricos donde TextFormField no tiene
+  # labelText, no exponen aria-label en el flt-semantics. fillInput por aria-label
+  # no aplica. La estrategia es dispatch chain sobre el primer flt-semantics
+  # [role="textbox"] sin aria-label + keyboard.type (escribe en el activeElement).
+  # ----------------------------------------------------------
+  - id: "K015"
+    registered_at: "2026-05-20"
+    registered_by: "user"
+    category: "build"
+    description: "Flutter web CanvasKit: inputs sin aria-label requieren dispatch + keyboard.type (no fill)"
+    enabled: true
+
+    # Pattern (ampliado en v1.6.1, fixed cross-line en v1.6.2):
+    #   Directa: fillUnlabeledTextbox no encontró un textbox sin aria-label.
+    #   Indirecta (caso observado en un wizard de prueba): el helper aparentó funcionar
+    #   (no tiró error) pero el value no se commiteó → el form quedó con un mensaje de campo
+    #   obligatorio en el campo de teléfono y el wizard no avanzó al siguiente paso. El síntoma visible es
+    #   TimeoutError esperando un input del paso siguiente. Coincide con K013 indirecto;
+    #   ambos matchean y el modelo elige según contexto del helper que se llamó.
+    # Cross-line safe: usamos [\s\S]* (ver nota en K013).
+    pattern: "flt-semantics\\[role=.textbox.\\][\\s\\S]*no[\\s\\S]*aria-label|unlabeled[\\s\\S]*textbox|(?:[Oo]bligatori[oa]|[Rr]equired)[^\\n]{0,80}(?:Tel[eé]fono|Phone)|fillUnlabeledTextbox[\\s\\S]*Timeout|TimeoutError[\\s\\S]*locator[\\s\\S]*input\\[aria-label[\\s\\S]*\\*?\\\"\\][\\s\\S]*(?:after|tras)[\\s\\S]*fillUnlabeled"
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps:
+        - cmd: "echo 'Patrón estructural — sin auto-apply. Ver fallback_message.'"
+          wait_seconds: 0
+          description: "Aviso al usuario"
+      fallback_message: |
+        Para llenar un input sin aria-label (típicamente teléfonos en Flutter):
+
+        ```typescript
+        async function fillUnlabeledTextbox(page, value) {
+          await page.evaluate(() => (document.activeElement)?.blur());
+          await page.waitForTimeout(100);
+          const found = await page.evaluate(() => {
+            const t = Array.from(document.querySelectorAll('flt-semantics[role="textbox"]'))
+              .find(el => !el.getAttribute('aria-label'));
+            if (!t) return false;
+            const r = t.getBoundingClientRect();
+            const o = { bubbles:true, cancelable:true,
+              clientX:r.x+r.width/2, clientY:r.y+r.height/2, button:0 };
+            ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(type =>
+              t.dispatchEvent(new (type.startsWith('pointer')?PointerEvent:MouseEvent)(type, o))
+            );
+            return true;
+          });
+          if (!found) throw new Error('no unlabeled textbox found');
+          await page.waitForTimeout(200);
+          await page.keyboard.type(value);
+          await page.waitForTimeout(200);
+        }
+        ```
+
+        Por qué keyboard.type y no fill:
+        - keyboard.type escribe en el elemento con foco del browser (activeElement).
+        - El dispatch chain anterior dio foco al input on-demand de Flutter (creado
+          en flt-text-editing-host al recibir el tap).
+        - keyboard.type entonces escribe letra a letra al TextEditingController.
+
+        Limitación: si hay múltiples flt-semantics[role="textbox"] sin aria-label
+        en la misma pantalla, el helper agarra el primero (orden DOM). Para
+        identificar uno específico, agregar Semantics(label: 'X') al widget en
+        Flutter (preferido) o usar un selector más específico por posición.
+
+        Este patrón está implementado en `fillUnlabeledTextbox` del _helpers.ts
+        del driver a partir de v1.5.1.
+
+        ─── Si este match fue INDIRECTO (v1.6.1) ───
+        Caso observado: `fillUnlabeledTextbox` aparentó funcionar pero el
+        teléfono quedó vacío en el form. Visible: mensaje de campo obligatorio en el
+        campo de teléfono
+        + TimeoutError esperando el input del paso siguiente.
+
+        Hipótesis a validar en --headed con DevTools:
+          1. ¿El selector `flt-semantics[role="textbox"]` SIN aria-label agarró
+             OTRO nodo (ej. un campo opcional que aparece antes en el DOM)?
+             Fix: filtrar por posición o agregar Semantics(label) al widget.
+          2. ¿El dispatch chain disparó pero keyboard.type escribió en otro
+             activeElement (ej. el foco se perdió antes de keyboard.type)?
+             Fix: agregar `await page.waitForTimeout(400)` antes de keyboard.type
+             para asegurar que Flutter creó el input on-demand.
+          3. ¿El número escrito tiene formato inválido (ej. prefijo + número con
+             espacios) y el TextFormField lo rechaza silenciosamente?
+             Fix: usar value sin caracteres especiales o ajustar el inputFormatter
+             del widget Dart.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+  # ----------------------------------------------------------
+  # BUILD — Chrome autofill interference in headed mode
+  # Registrado por: usuario (caso observado: wizard multi-paso en Flutter web de prueba)
+  # Contexto: tests de validación que escriben values inválidos a propósito
+  # (ej. 'not-a-valid-email') fallan en modo --headed porque Chrome autofill
+  # pisa el value con uno guardado de runs previos antes de que Flutter valide.
+  # Workaround: lockInputValue después del fill — congela el getter.
+  # ----------------------------------------------------------
+  - id: "K016"
+    registered_at: "2026-05-20"
+    registered_by: "user"
+    category: "build"
+    description: "Chrome autofill (modo headed) puede pisar values escritos por fill() en tests de validación"
+    enabled: true
+
+    pattern: "test\\.skip.*autofill|Chrome autofill|insertFromAutofill"
+
+    preflight_check: null
+
+    solution:
+      auto_apply: false
+      type: "manual"
+      steps:
+        - cmd: "echo 'Patrón estructural — sin auto-apply. Ver fallback_message.'"
+          wait_seconds: 0
+          description: "Aviso al usuario"
+      fallback_message: |
+        En modo --headed, Chrome comparte el profile del browser entre tests del
+        mismo `npx playwright test` run. Si un test 1 escribe 'qa@example.com' en
+        'Email *', el siguiente test que escriba 'not-a-valid-email'
+        en el mismo input puede ser pisado por el autofill ANTES de que Flutter
+        valide. Resultado: el test de validación de error pasa el step sin disparar
+        validación, y falla por timeout esperando 'Email inválido'.
+
+        Workaround: lockInputValue después del fill (congela el getter del input):
+
+        ```typescript
+        await fillInput(page, 'Email *', 'not-a-valid-email');
+        await lockInputValue(page, 'Email *', 'not-a-valid-email');
+        await tapButton(page, 'Siguiente');
+        ```
+
+        Si no quieres lock (puede tener side-effects en interacciones siguientes),
+        alternativas:
+        - Correr en --headless (default; no hay autofill activo).
+        - Detectar el fallback en el test y test.skip con mensaje claro
+          (ver el spec del wizard de tu proyecto).
+
+        Este patrón está implementado en `lockInputValue` del _helpers.ts
+        del driver a partir de v1.5.1.
+
+    stats:
+      applied_count: 0
+      last_applied: null
+      last_result: null
+
+# ============================================================
+# ERRORES REGISTRADOS POR EL AGENTE
+# El agente añade entradas debajo de esta línea automáticamente.
+# No eliminar este comentario — sirve como marcador de inserción.
+# ============================================================
+# [AGENT_ENTRIES_START]
