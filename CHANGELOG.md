@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Plugin icon (`.claude-plugin/icon.png`).
+
 ## [1.6.3] — 2026-05-23
 
 Mejora documental tras una sesión de validación interna del uso de Playwright MCP. La sesión confirmó el enfoque: Playwright MCP como herramienta exploratoria del developer/QA, ciclo `.spec.ts` del driver para regresión. Este patch documenta el contrato y abre una opción explícita en el R4 gate para invocarlo.
